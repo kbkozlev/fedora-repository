@@ -21,9 +21,9 @@ be replicated and self-hosted.
 3.  Bitwarden
 
 ``` bash
-curl -o /etc/yum.repos.d/citrix.repo https://fedora-repo.kozlev.com/citrix.repo
-curl -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox.repo
-curl -o /etc/yum.repos.d/bitwarden.repo https://fedora-repo.kozlev.com/bitwarden.repo
+sudo dnf config-manager --add-repo https://fedora-repo.kozlev.com/citrix/citrix.repo
+sudo dnf config-manager --add-repo https://fedora-repo.kozlev.com/rambox/rambox.repo
+sudo dnf config-manager --add-repo https://fedora-repo.kozlev.com/bitwarden/bitwarden.repo
 
 sudo dnf makecache
 sudo dnf install ICAClient rambox bitwarden
