@@ -78,6 +78,5 @@ The purpose of the bash scripts is to:
 
 ### Installation on client machine
 1. `curl -o /etc/yum.repos.d/<repo-name>.repo <baseurl of repo>`
-   2. example `curl -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox.repo`
 2. `sudo dnf makecache`
-3. then do `sudo snf install <package-name>`
+3. `sudo dnf install <package-name>`
