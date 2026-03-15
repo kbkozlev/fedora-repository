@@ -131,7 +131,7 @@ rpm --addsign /var/www/html/<repo>/*.rpm
 6.  Export the public key
 
 ``` bash
-gpg --export -a "<Repo-Name>" > /var/www/html/RPM-GPG-KEY-<repo>
+gpg --export -a "<Repo-Name>" > /var/www/html/<repo>/RPM-GPG-KEY-<repo>
 ```
 
 ------------------------------------------------------------------------
@@ -141,7 +141,7 @@ gpg --export -a "<Repo-Name>" > /var/www/html/RPM-GPG-KEY-<repo>
 1.  Create the repo configuration file
 
 ``` bash
-micro /var/www/html/<repo>.repo
+micro /var/www/html/<repo>/<repo>.repo
 ```
 
 Example configuration:
@@ -160,7 +160,7 @@ Example configuration:
 1.  Download the repository file
 
 ``` bash
-curl -o /etc/yum.repos.d/<repo-name>.repo <baseurl of repo>
+sudo dnf config-manager --add-repo <baseurl of repo>
 ```
 
 2.  Refresh the repository cache
