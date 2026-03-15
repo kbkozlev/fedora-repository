@@ -4,6 +4,19 @@ This is my custom fedora repository for hosting multiple services. None of these
 I created this repository for my personal use, however everyone is welcome to use it themselves if they want to.
 If not, I'm providing all scripts and explanation on how I created the repos so that they can be replicated and self hosted.
 
+### Current Active Repositories
+1. Citrix Workspace
+2. Rambox 
+3. Bitwarden
+
+```
+curl -o /etc/yum.repos.d/citrix.repo https://fedora-repo.kozlev.com/citrix.repo 
+curl -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox.repo
+curl -o /etc/yum.repos.d/bitwarden.repo https://fedora-repo.kozlev.com/bitwarden.repo
+sudo dnf makecache
+sudo dnf install ICAClient rambox bitwarden
+```
+
 ### 1. Principle of Work
 **Install Dependencies**
 
