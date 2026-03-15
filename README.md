@@ -32,5 +32,39 @@ The purpose of the bash scripts is to:
 3. sign the packages
 4. update the repository metadata.
 
+#### To set up the cron job:
+1. `sudo crontab -e`
+2. enter the following entry for each service:
+
+    `0 0 * * 0 /bin/bash /root/<repo>/update-<repo>-repo.sh`
 -----------
 ### 4. Signing the packages
+1. install dependencies `sudo dnf install gnupg rpm-sign`
+2. run `gpg --full-generate-key`
+3. choose `Key type=RSA, size=4096, expiration=0`
+4. configure RPM to use the key `sudo micro ~/.rpmmacros`
+5. in the macros file add 
+    ``` 
+    %_signature gpg
+    %_gpg_name <Name_of_repository> 
+    ```
+6. sign the package `rpm --addsign /var/www/html/<repo>/*.rpm`
+7. export the public key `gpg --export -a "<Repo-Name>>" > /var/www/html/RPM-GPG-KEY-<repo>`
+
+-----------
+### Create repo file
+1. `micro /var/www/html/<repo>.repo`
+``` 
+    [<repo-name>]
+    name=(Kozlev's Repository) - <Repo-name>
+    baseurl=https://<url-to-repo>/<repo-name>/
+    enabled=1
+    gpgcheck=1
+    gpgkey=https://<url-to-repo>/RPM-GPG-KEY-<repo-name>
+```
+
+### Installation on client machine
+1. `curl -o /etc/yum.repos.d/<repo-name>.repo <baseurl of repo>`
+   2. example `curl -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox.repo`
+2. `sudo dnf makecache`
+3. then do `sudo snf install <package-name>`
