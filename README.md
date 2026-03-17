@@ -14,6 +14,10 @@ be replicated and self-hosted.
 
 ------------------------------------------------------------------------
 
+## Updates:
+1. Skip the signing of the packages, as they are still not being shown by Discover. DNF does not need them to be signed.
+In the bash scripts this section has been commented out, but still left for the future if I find a resolution to this issue.
+
 ## Current Active Repositories
 
 1.  Citrix Workspace
@@ -91,7 +95,7 @@ sudo crontab -e
 
 ------------------------------------------------------------------------
 
-## 4. Signing the Packages
+## ~~4. Signing the Packages~~
 
 1.  Install dependencies
 
@@ -150,9 +154,7 @@ Example configuration:
     name=(Kozlev's Repository) - <repo-name>
     baseurl=https://<url-to-repo>/<repo-name>/
     enabled=1
-    gpgcheck=1
-    gpgkey=https://<url-to-repo>/RPM-GPG-KEY-<repo-name>
-
+    gpgcheck=0
 ------------------------------------------------------------------------
 
 ## Installation on Client Machine

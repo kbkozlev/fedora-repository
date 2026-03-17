@@ -30,7 +30,7 @@ LOG_FILE="/root/citrix/citrix-repo-update.log"
   keep_last_n "$REPO_DIR/ctxappprotection-*.rpm" 3
 
   # sign packages rpm
-  --resign $REPO_DIR/*.rpm
+  # --resign $REPO_DIR/*.rpm
 
   # 3) Update repository metadata
   createrepo --update "$REPO_DIR"
