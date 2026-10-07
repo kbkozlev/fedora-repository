@@ -5,16 +5,17 @@ usage() {
   echo 'Usage: bash install.sh SERVICE [SERVICE ...] [--no-sync] [--timezone ZONE]'
   echo '       bash install.sh --all [--no-sync] [--timezone ZONE]'
   echo 'Each services/<id>/install.sh installs only that service.'
+  echo 'The existing server timezone is preserved unless --timezone is provided.'
 }
 selected=()
 run_sync=1
-timezone=Europe/Sofia
+timezone=""
 while (( $# )); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --all) selected+=(all); shift ;;
     --no-sync) run_sync=0; shift ;;
-    --timezone) if (( $# < 2 )); then usage >&2; exit 2; fi; timezone=$2; shift 2 ;;
+    --timezone) if (( $# < 2 )) || [[ -z $2 ]]; then usage >&2; exit 2; fi; timezone=$2; shift 2 ;;
     --*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     *) selected+=("$1"); shift ;;
   esac
@@ -23,7 +24,7 @@ if (( ${#selected[@]} == 0 )); then usage >&2; exit 2; fi
 if [[ ${EUID} -ne 0 ]]; then echo 'Run as root inside the Fedora repository server.' >&2; exit 1; fi
 source /etc/os-release
 if [[ ${ID} != fedora ]]; then echo 'This installer targets Fedora.' >&2; exit 1; fi
-if [[ ! $timezone =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]]; then
+if [[ -n $timezone && ! $timezone =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]]; then
   echo 'Invalid timezone name.' >&2; exit 2
 fi
 
@@ -48,7 +49,7 @@ install -d -m 0700 "$backup_dir"
 crontab -l > "$backup_dir/root.crontab" 2>/dev/null || true
 if [[ -d $installed_dir ]]; then cp -a "$installed_dir" "$backup_dir/installed-updater"; fi
 if [[ -f /usr/local/bin/rpm-repo-sync ]]; then cp -a /usr/local/bin/rpm-repo-sync "$backup_dir/launcher"; fi
-if [[ -e /etc/localtime ]]; then cp -a /etc/localtime "$backup_dir/localtime"; fi
+if [[ -n $timezone && -e /etc/localtime ]]; then cp -a /etc/localtime "$backup_dir/localtime"; fi
 for path in /etc/httpd/conf.d/rpm-repo-sync.conf /etc/logrotate.d/rpm-repo-sync; do
   if [[ -f $path ]]; then cp -a "$path" "$backup_dir/$(basename "$(dirname "$path")")-$(basename "$path")"; fi
 done
@@ -68,6 +69,7 @@ PY
 mapfile -t deploy < "$backup_dir/deploy.txt"
 mapfile -t selected < "$backup_dir/selected.txt"
 mapfile -t extra_dependencies < "$backup_dir/dependencies.txt"
+if [[ -n $timezone ]]; then extra_dependencies+=(tzdata); fi
 for app in "${deploy[@]}"; do
   test -f "$bundle_dir/services/$app/update.sh"
   if [[ -f /root/$app/update-$app-repo.sh ]]; then
@@ -77,7 +79,7 @@ done
 
 echo "Installing shared dependencies and selected service requirements; backup: $backup_dir"
 dnf -y install python3 python3-requests python3-rpm rpm createrepo_c cronie \
-  logrotate procps-ng util-linux tzdata httpd "${extra_dependencies[@]}"
+  logrotate procps-ng util-linux httpd "${extra_dependencies[@]}"
 command -v rpmkeys createrepo_c > /dev/null
 /usr/bin/python3 -m compileall -q "$bundle_dir/common" "$bundle_dir/services" "$bundle_dir/rpm_repo_sync.py"
 PYTHONPATH="$bundle_dir" /usr/bin/python3 - "$bundle_dir/services" "${deploy[@]}" <<'PY'
@@ -86,11 +88,9 @@ from common.registry import load_service
 for name in sys.argv[2:]: load_service(sys.argv[1],name)
 PY
 
-test -f "/usr/share/zoneinfo/$timezone"
-if ! timedatectl set-timezone "$timezone"; then
-  ln -sfn "/usr/share/zoneinfo/$timezone" /etc/localtime
-fi
-echo "Container local time: $(date '+%Y-%m-%d %H:%M:%S %Z %z')"
+source "$bundle_dir/common/timezone.sh"
+configure_timezone "$timezone"
+echo "Server local time: $(date '+%Y-%m-%d %H:%M:%S %Z %z')"
 install -d -m 0755 "$installed_dir" /var/log/rpm-repo-sync
 install -d -m 0700 /var/www/.rpm-repo-sync-work
 # Replace each code file atomically while the installation lock is held.

@@ -5,44 +5,10 @@ updater downloads the vendors' RPMs, preserves their contents and any upstream
 signatures, and publishes the metadata that DNF needs to install and update them.
 It does not build these applications or re-sign their packages.
 
-This project began as a personal repository and includes the scripts and steps
-needed to host your own. The reference deployment uses Fedora 44 in a Proxmox
-LXC, Apache, a Cloudflare Tunnel, and daily Proxmox backups. Proxmox and Cloudflare
-are optional; any suitable Fedora server and HTTP/HTTPS endpoint can serve it.
-
-## Use the hosted repositories
-
-Run these commands on your Fedora **client**, not the repository server:
-
-```bash
-sudo curl -fSL -o /etc/yum.repos.d/bitwarden.repo https://fedora-repo.kozlev.com/bitwarden/bitwarden.repo
-sudo curl -fSL -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox/rambox.repo
-sudo curl -fSL -o /etc/yum.repos.d/citrix.repo https://fedora-repo.kozlev.com/citrix/citrix.repo
-sudo dnf --refresh makecache
-sudo dnf install bitwarden rambox
-```
-
-Citrix can be installed separately when its dependencies are available:
-
-```bash
-sudo dnf install ICAClient
-```
-
-| Repository ID | Application / RPM names | Repository URL |
-| --- | --- | --- |
-| `bitwarden` | `bitwarden` | https://fedora-repo.kozlev.com/bitwarden/ |
-| `rambox` | `rambox` | https://fedora-repo.kozlev.com/rambox/ |
-| `citrix-workspace` | `ICAClient`, `ctxusb`, `ctxappprotection` | https://fedora-repo.kozlev.com/citrix/ |
-
-Once installed through RPM/DNF, packages can receive updates through your normal
-`sudo dnf upgrade`. This project automates **server-side repository updates**;
-it does not enable unattended installations on client machines.
-
-The provided repository definitions use `gpgcheck=0`. Upstream signatures, where
-present, are preserved, but this setting does not verify them on the client.
-The mirror checks RPM integrity and available upstream SHA-256 checksums.
-Client signature verification can be enabled separately with `gpgcheck=1` and
-the appropriate vendor keys; there is no custom repository signing key here.
+Use it on a Fedora server, virtual machine or container to host your own RPM
+repositories. Each service is installed separately and shares a common engine.
+The setup guide uses Apache and an example domain. Hosting, HTTPS, backup strategy
+and timezone are deployment choices; Proxmox and Cloudflare are optional.
 
 ## How an RPM repository works
 
@@ -101,7 +67,7 @@ when you create an empty repository.
 
 ## Create your own repository server
 
-The commands below run **as root inside the Fedora server or LXC**. Change the
+The commands below run **as root on the Fedora repository server**. Change the
 example hostname to your own. On an existing server, preserve its virtual host
 and `.repo` files and skip the sections that recreate them.
 
@@ -114,7 +80,7 @@ install -d -m 0755 /var/www/html
 ```
 
 The installer later adds the Python dependencies, `createrepo_c`, RPM tools,
-log rotation and timezone data. Use Fedora's `/usr/bin/python3`; it includes
+and log rotation. Use Fedora's `/usr/bin/python3`; it includes
 the matching Fedora RPM bindings. The supported downloaded architectures are
 `x86_64` and `noarch`.
 
@@ -160,15 +126,15 @@ and `repomd.xml`. It preserves the virtual host above.
 
 ### 3. Publish the HTTP endpoint
 
-For a Cloudflare Tunnel, create a public hostname such as `repo.example.com`
-pointing to `http://localhost:80` when the tunnel connector runs in the same
-container. If the connector runs elsewhere, use the repository server's LAN
-address, for example `http://192.168.8.119:80`.
+Choose an endpoint your clients can reach, such as `https://repo.example.com`.
+Configure DNS, HTTPS and firewall access for your deployment. Apache may serve
+HTTPS directly or sit behind a reverse proxy or tunnel that handles HTTPS.
 
-Keep repository paths accessible to DNF without a browser login or interactive
-challenge. HTTPS is provided at the public tunnel endpoint. If you instead
-expose Apache directly, configure HTTPS and the necessary firewall access for
-your deployment. Test the actual public URLs from a client machine.
+With an optional Cloudflare Tunnel, point the public hostname to
+`http://localhost:80` if the connector runs on the repository server. If it runs
+elsewhere, use the repository server's reachable address, such as
+`http://repo.internal:80`. Repository paths must be accessible to DNF without a
+browser login or interactive challenge. Test the published URLs from a client.
 
 ### 4. Create client repository definitions
 
@@ -213,6 +179,12 @@ Use your public hostname in each `baseurl`. The URL points to the directory
 containing `repodata/`, not to `Packages/` or the `.repo` file itself. Keeping the
 same repository IDs allows an existing client configuration to continue working.
 
+The provided repository definitions use `gpgcheck=0`. Upstream signatures, where
+present, are preserved, but this setting does not verify them on the client.
+The mirror checks RPM integrity and available upstream SHA-256 checksums.
+Client signature verification can be enabled separately with `gpgcheck=1` and
+the appropriate vendor keys; there is no custom repository signing key here.
+
 ### 5. Install only the services you need
 
 Install one application using its own script:
@@ -240,19 +212,28 @@ running downloads. Future cron runs still use the configured daily schedules.
 The installer:
 
 - Installs runtime dependencies and `/usr/local/bin/rpm-repo-sync`.
-- Sets the server timezone to **Europe/Sofia** and restarts Apache and cron.
+- Preserves the server's existing timezone by default.
 - Creates `/root/<app>/update-<app>-repo.sh` for the selected applications.
 - Preserves unselected applications and unrelated root cron jobs, and updates
   only the selected services' daily schedules.
 - Configures Apache listing/cache options and seven rotated log archives.
-- Backs up existing wrappers, root crontab, timezone and updater configuration
+- Backs up existing wrappers, root crontab and updater configuration
   under `/root/repo-updater-backup-<UTC timestamp>`.
 - Runs a first sync only for the requested repositories. A failed sync returns
   an error and leaves its previous published metadata in place.
 
-Europe/Sofia is the default. Set a different timezone with
-`--timezone Europe/Berlin`, for example. Re-running the installer re-applies
-the selected timezone. Log timestamps remain explicitly in UTC.
+Timezone configuration is optional. Cron uses the server's configured local
+timezone. To change it deliberately during installation, supply an IANA timezone
+name; for example:
+
+```bash
+bash /opt/fedora-repository/services/bitwarden/install.sh --timezone UTC
+```
+
+With `--timezone`, the installer also backs up the previous timezone and installs
+timezone data if needed. Without that option, it does not change `/etc/localtime`
+or call `timedatectl`. Updater log timestamps are explicitly in UTC regardless of
+the server timezone. Apache and cron are restarted after configuration updates.
 
 When upgrading the former bundled installation for the first time, the installer
 preserves its previously installed services by creating their separate modules.
@@ -277,8 +258,20 @@ the upstream release dates. HTTP date headers continue to use GMT.
 
 ### 6. Add the repositories to client machines
 
-Use the client commands at the top of this README, replacing the hostname with
-your own. Then verify the packages advertised by each repository:
+Download the definitions for the services you host, replacing `repo.example.com`
+with the public endpoint configured above:
+
+```bash
+sudo curl -fSL -o /etc/yum.repos.d/bitwarden.repo https://repo.example.com/bitwarden/bitwarden.repo
+sudo curl -fSL -o /etc/yum.repos.d/rambox.repo https://repo.example.com/rambox/rambox.repo
+sudo curl -fSL -o /etc/yum.repos.d/citrix.repo https://repo.example.com/citrix/citrix.repo
+sudo dnf --refresh makecache
+```
+
+Install the desired packages using DNF, for example `sudo dnf install bitwarden`.
+They then receive updates through the normal `sudo dnf upgrade` workflow. The
+server updater does not configure unattended installations on client machines.
+Verify the packages advertised by each enabled repository:
 
 ```bash
 dnf --refresh --repo=bitwarden list --available --showduplicates
@@ -320,13 +313,16 @@ the updater does not change the repository's `baseurl` or the RPM identity.
 
 ## Daily updates and maintenance
 
-The installed root crontab runs in Sofia local time:
+Default service schedules use the repository server's configured timezone:
 
 | Application | Daily time |
 | --- | --- |
 | Bitwarden | 00:00 |
 | Citrix | 00:10 |
 | Rambox | 00:20 |
+
+Set each service's `update_time` in `services/<id>/service.json` before installing
+or reinstalling that service to use a different daily time.
 
 Run an update or a dry run manually on the server:
 
@@ -435,10 +431,10 @@ never discovered or installed unless you copy it into `services/` and select it.
 ## Troubleshooting
 
 **Repository loads, but a package cannot be installed:** inspect DNF's dependency
-error. Hosting an RPM does not change the distributions it supports. For example,
-the Citrix RPMs tested on Fedora 44 require `webkit2gtk3 >= 2.26`, which was not
-available in that client's enabled repositories. The mirror cannot fix that
-dependency. Avoid using `--skip-broken` as a remedy; it skips the package.
+error. Hosting an RPM does not change its dependencies or supported distributions.
+A vendor RPM targeting another distribution may require packages unavailable on
+the client. The mirror cannot fix that dependency. Avoid using `--skip-broken` as
+a remedy; it skips the package.
 
 **A client requests a removed RPM:** retaining only three versions means older
 cached metadata can reference a pruned version. Run the DNF operation with
@@ -451,10 +447,14 @@ no-store` for `repomd.xml` and `.repo` files. If a Cloudflare cache rule overrid
 origin headers, bypass caching for those paths and purge stale entries. Compare
 the public URL with the same URL fetched directly from Apache.
 
-**Dates remain in UTC or names remain hash-prefixed:** check the installer output,
-`readlink -f /etc/localtime`, and the installed updater path. Make sure the updated
-installer actually completed; running verification commands alone does not deploy
-new code. Apache and cron need a restart after a timezone change.
+**Dates use an unexpected timezone:** check `date` and `readlink -f /etc/localtime`.
+The installer preserves the existing timezone unless `--timezone` is supplied.
+Apache uses local time for directory listings; updater logs use UTC and HTTP date
+headers use GMT. Restart Apache and cron after changing the server timezone.
+
+**Names remain hash-prefixed after upgrading:** check the installer output and
+installed updater path. The updated code must be installed and a successful sync
+must run before existing filenames migrate. Refresh client metadata afterwards.
 
 **An existing RPM fails validation:** the log names the file. Move that specific
 file to a private directory outside `/var/www/html`, then retry. Failed new
@@ -467,8 +467,9 @@ override the root listing even when the package repository paths work.
 
 ## Backups and rollback
 
-The reference LXC has a daily Proxmox backup. For another deployment, back up the
-web root, updater state, installed scripts, Apache configuration and root crontab.
+Back up the web root, updater state, installed scripts, Apache configuration and
+root crontab on a schedule suitable for the deployment. Use filesystem, VM or
+container backups as appropriate for the hosting environment.
 The installer's configuration backup is useful for reverting scripts but is not
 a full package backup.
 
@@ -479,9 +480,39 @@ and restore the saved launcher to `/usr/local/bin/rpm-repo-sync`. Restore the pr
 and timezone as needed, validate Apache, and restart Apache and cron. A full
 rollback of pruned package contents requires the container or filesystem backup.
 
+## Optional: use the public repositories
+
+The public repositories at `fedora-repo.kozlev.com` can be used without hosting
+your own server. This is optional and separate from the self-hosting setup above.
+Run these commands on the Fedora client:
+
+```bash
+sudo curl -fSL -o /etc/yum.repos.d/bitwarden.repo https://fedora-repo.kozlev.com/bitwarden/bitwarden.repo
+sudo curl -fSL -o /etc/yum.repos.d/rambox.repo https://fedora-repo.kozlev.com/rambox/rambox.repo
+sudo curl -fSL -o /etc/yum.repos.d/citrix.repo https://fedora-repo.kozlev.com/citrix/citrix.repo
+sudo dnf --refresh makecache
+sudo dnf install bitwarden rambox
+```
+
+Citrix can be installed separately when its dependencies are available:
+
+```bash
+sudo dnf install ICAClient
+```
+
+| Repository ID | Application / RPM names | Repository URL |
+| --- | --- | --- |
+| `bitwarden` | `bitwarden` | https://fedora-repo.kozlev.com/bitwarden/ |
+| `rambox` | `rambox` | https://fedora-repo.kozlev.com/rambox/ |
+| `citrix-workspace` | `ICAClient`, `ctxusb`, `ctxappprotection` | https://fedora-repo.kozlev.com/citrix/ |
+
+Once installed through RPM/DNF, packages can receive updates through your normal
+`sudo dnf upgrade`. This project automates **server-side repository updates**;
+it does not enable unattended installations on client machines.
+
 ## Validation and documentation
 
-The updater has 45 automated checks, including RPM version ordering, three-version
+The updater has 49 automated checks, including RPM version ordering, three-version
 retention, downloads that fail without pruning history, readable filename
 migration, immutable package URLs, metadata validation, locks and unchanged runs.
 The suite also checks independent service loading, selective dependencies,

@@ -1,6 +1,6 @@
 # Validation completed
 
-All **45 automated checks passed**. The integration checks built actual small
+All **49 automated checks passed**. The integration checks built actual small
 RPMs with `rpmbuild`, downloaded them from a local HTTP server, verified their
 digests with `rpmkeys`, and generated real repository metadata with
 `createrepo_c`.
@@ -60,11 +60,14 @@ Verified behaviors:
   installer entry point.
 - The starter template refuses its placeholder URL and revalidates fixed
   latest-RPM URLs that have no ETag or Last-Modified revision.
+- The default timezone helper calls no system tools and leaves configuration
+  alone. Explicit timezone selection, minimal-container fallback and rejection
+  of invalid zone names are tested with mocked shell commands.
 
 Separate shell checks passed for the installer syntax and cron migration;
 the cron transformation preserves unrelated jobs.
 
-Live upstream discovery was also checked successfully:
+Live upstream discovery was checked on 2026-10-06:
 
 - Bitwarden: `Bitwarden-2026.9.1-x86_64.rpm`, published SHA-256 available.
 - Citrix: `ICAClient-rhel-gcc-8-26.04.10.1-0.x86_64.rpm`, corresponding USB
@@ -73,16 +76,16 @@ Live upstream discovery was also checked successfully:
   entry was `v3.0.0` with no RPM; the stable RPM fallback selected `v2.7.1`.
 
 The local test environment was Ubuntu 24.04, Python 3.12, RPM 4.18.2 and
-createrepo_c 0.17.3. Your reported LXC uses Fedora 44, RPM 6.0.1 and
-createrepo_c 1.2.1. Fedora dependency names and relevant current RPM/DNF
+createrepo_c 0.17.3. The deployment target is Fedora with its packaged Python
+RPM bindings and createrepo_c. Fedora dependency names and relevant RPM/DNF
 interfaces were checked against official documentation. RPM integrity checks
 explicitly select the digest verification level for this read-only operation;
 no global RPM policy is changed.
 
-You reported that the previous bundle works on your LXC. This revision's
-installer changes (selective deployment, migration, Europe/Sofia timezone,
-service restarts and wider Apache listing) have passed shell syntax checks but
-have not been run on your LXC
-from this environment. Full current vendor RPMs were not downloaded here.
-The installer validates Apache's configuration on your container and runs a
-sync. Review its output, local date and browser listing after applying it.
+The installer has passed shell syntax checks, and code deployment, migration
+planning and optional timezone behavior were tested independently. A complete
+installation involving Fedora package management and live system services was
+not executed in this test environment. Full current vendor RPMs were not
+downloaded here. The installer validates Apache's configuration and runs a sync
+unless --no-sync is selected. Check the install output, repository URLs and
+client DNF listing on the deployment target.
