@@ -1,81 +1,114 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ ${EUID} -ne 0 ]]; then
-  echo 'Run this installer as root INSIDE the Fedora repository LXC.' >&2
-  exit 1
-fi
+usage() {
+  echo 'Usage: bash install.sh SERVICE [SERVICE ...] [--no-sync] [--timezone ZONE]'
+  echo '       bash install.sh --all [--no-sync] [--timezone ZONE]'
+  echo 'Each services/<id>/install.sh installs only that service.'
+}
+selected=()
+run_sync=1
+timezone=Europe/Sofia
+while (( $# )); do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --all) selected+=(all); shift ;;
+    --no-sync) run_sync=0; shift ;;
+    --timezone) if (( $# < 2 )); then usage >&2; exit 2; fi; timezone=$2; shift 2 ;;
+    --*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    *) selected+=("$1"); shift ;;
+  esac
+done
+if (( ${#selected[@]} == 0 )); then usage >&2; exit 2; fi
+if [[ ${EUID} -ne 0 ]]; then echo 'Run as root inside the Fedora repository server.' >&2; exit 1; fi
 source /etc/os-release
-if [[ ${ID} != fedora ]]; then
-  echo 'This installer targets your Fedora LXC.' >&2
-  exit 1
+if [[ ${ID} != fedora ]]; then echo 'This installer targets Fedora.' >&2; exit 1; fi
+if [[ ! $timezone =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]]; then
+  echo 'Invalid timezone name.' >&2; exit 2
 fi
 
 bundle_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-backup_dir="/root/repo-updater-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+installed_dir=/usr/local/lib/rpm-repo-sync
+if ! command -v /usr/bin/python3 flock pgrep > /dev/null; then
+  dnf -y install python3 util-linux procps-ng
+fi
+install -d -m 0700 /var/lib/rpm-repo-sync
+exec 9>/var/lib/rpm-repo-sync/install.lock
+if ! flock -n 9; then
+  echo 'A repository update or installation is running. Let it finish, then retry.' >&2; exit 1
+fi
+# The former bundled updater does not take the shared installation lock.
+if pgrep -f '^(/bin/)?bash /root/[^/]+/update-.*-repo.sh' > /dev/null \
+   || pgrep -f '^python3 /root/[^/]+/.*_downloader.py' > /dev/null \
+   || pgrep -f '^/usr/bin/python3 /usr/local/lib/rpm-repo-sync/rpm_repo_sync.py' > /dev/null; then
+  echo 'A repository process is active. Let it finish, then retry.' >&2; exit 1
+fi
+backup_dir="/root/repo-updater-backup-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 install -d -m 0700 "$backup_dir"
 crontab -l > "$backup_dir/root.crontab" 2>/dev/null || true
-for app in bitwarden citrix rambox; do
-  if [[ -f "/root/$app/update-$app-repo.sh" ]]; then
+if [[ -d $installed_dir ]]; then cp -a "$installed_dir" "$backup_dir/installed-updater"; fi
+if [[ -f /usr/local/bin/rpm-repo-sync ]]; then cp -a /usr/local/bin/rpm-repo-sync "$backup_dir/launcher"; fi
+if [[ -e /etc/localtime ]]; then cp -a /etc/localtime "$backup_dir/localtime"; fi
+for path in /etc/httpd/conf.d/rpm-repo-sync.conf /etc/logrotate.d/rpm-repo-sync; do
+  if [[ -f $path ]]; then cp -a "$path" "$backup_dir/$(basename "$(dirname "$path")")-$(basename "$path")"; fi
+done
+
+# Read manifests using the standard library; unrelated vendor modules are not imported.
+/usr/bin/python3 "$bundle_dir/common/install_config.py" plan \
+  --source "$bundle_dir/services" --installed "$installed_dir" "${selected[@]}" > "$backup_dir/plan.json"
+/usr/bin/python3 - "$backup_dir/plan.json" <<'PY'
+import json,sys
+from pathlib import Path
+p=json.loads(Path(sys.argv[1]).read_text())
+print('Requested services: '+', '.join(p['selected']))
+if p['migrated']: print('Preserving existing bundled services during migration: '+', '.join(p['migrated']))
+for key in ('selected','deploy','dependencies'):
+    Path(sys.argv[1]).with_name(key+'.txt').write_text(''.join(x+'\n' for x in p[key]))
+PY
+mapfile -t deploy < "$backup_dir/deploy.txt"
+mapfile -t selected < "$backup_dir/selected.txt"
+mapfile -t extra_dependencies < "$backup_dir/dependencies.txt"
+for app in "${deploy[@]}"; do
+  test -f "$bundle_dir/services/$app/update.sh"
+  if [[ -f /root/$app/update-$app-repo.sh ]]; then
     cp -a "/root/$app/update-$app-repo.sh" "$backup_dir/update-$app-repo.sh"
   fi
 done
-for name in rpm-repo-sync.conf; do
-  if [[ -f "/etc/httpd/conf.d/$name" ]]; then
-    cp -a "/etc/httpd/conf.d/$name" "$backup_dir/$name"
-  fi
-done
-if [[ -f /usr/local/lib/rpm-repo-sync/rpm_repo_sync.py ]]; then
-  cp -a /usr/local/lib/rpm-repo-sync/rpm_repo_sync.py "$backup_dir/rpm_repo_sync.py"
-fi
-if [[ -e /etc/localtime ]]; then
-  cp -a /etc/localtime "$backup_dir/localtime"
-fi
 
-echo "Installing runtime dependencies; backup: $backup_dir"
-dnf -y install python3 python3-requests python3-beautifulsoup4 python3-rpm \
-  rpm createrepo_c cronie logrotate procps-ng tzdata
-/usr/bin/python3 -c 'import requests, bs4, rpm'
+echo "Installing shared dependencies and selected service requirements; backup: $backup_dir"
+dnf -y install python3 python3-requests python3-rpm rpm createrepo_c cronie \
+  logrotate procps-ng util-linux tzdata httpd "${extra_dependencies[@]}"
 command -v rpmkeys createrepo_c > /dev/null
-/usr/bin/python3 -m py_compile "$bundle_dir/rpm_repo_sync.py"
+/usr/bin/python3 -m compileall -q "$bundle_dir/common" "$bundle_dir/services" "$bundle_dir/rpm_repo_sync.py"
+PYTHONPATH="$bundle_dir" /usr/bin/python3 - "$bundle_dir/services" "${deploy[@]}" <<'PY'
+import sys
+from common.registry import load_service
+for name in sys.argv[2:]: load_service(sys.argv[1],name)
+PY
 
-# Set the LXC's display/scheduling timezone, retaining the shared host clock.
-# Some minimal containers lack a working timedated/DBus service.
-if ! timedatectl set-timezone Europe/Sofia; then
-  test -f /usr/share/zoneinfo/Europe/Sofia
-  ln -sfn /usr/share/zoneinfo/Europe/Sofia /etc/localtime
+test -f "/usr/share/zoneinfo/$timezone"
+if ! timedatectl set-timezone "$timezone"; then
+  ln -sfn "/usr/share/zoneinfo/$timezone" /etc/localtime
 fi
 echo "Container local time: $(date '+%Y-%m-%d %H:%M:%S %Z %z')"
-
-# Refuse to replace a wrapper while its old downloader/maintenance job is active.
-if pgrep -f '^(/bin/)?bash /root/(bitwarden|citrix|rambox)/update-.*-repo.sh' > /dev/null \
-   || pgrep -f '^python3 /root/(bitwarden|citrix|rambox)/.*_downloader.py' > /dev/null; then
-  echo 'An old repository job is running. Let it finish, then rerun this installer.' >&2
-  exit 1
-fi
-
-install -d -m 0755 /usr/local/lib/rpm-repo-sync /var/log/rpm-repo-sync
-install -d -m 0700 /var/lib/rpm-repo-sync /var/www/.rpm-repo-sync-work
-install -m 0644 "$bundle_dir/rpm_repo_sync.py" /usr/local/lib/rpm-repo-sync/rpm_repo_sync.py
-cat > /usr/local/bin/rpm-repo-sync <<'EOF'
+install -d -m 0755 "$installed_dir" /var/log/rpm-repo-sync
+install -d -m 0700 /var/www/.rpm-repo-sync-work
+# Replace each code file atomically while the installation lock is held.
+/usr/bin/python3 "$bundle_dir/common/install_config.py" deploy \
+  --source "$bundle_dir" --installed "$installed_dir" "${deploy[@]}"
+cat > "$backup_dir/launcher.new" <<'LAUNCHER'
 #!/usr/bin/env bash
 exec /usr/bin/python3 /usr/local/lib/rpm-repo-sync/rpm_repo_sync.py "$@"
-EOF
-chmod 0755 /usr/local/bin/rpm-repo-sync
-
-for app in bitwarden citrix rambox; do
+LAUNCHER
+install -m 0755 "$backup_dir/launcher.new" /usr/local/bin/.rpm-repo-sync.new
+mv -f /usr/local/bin/.rpm-repo-sync.new /usr/local/bin/rpm-repo-sync
+for app in "${deploy[@]}"; do
   install -d -m 0700 "/root/$app"
-  cat > "/root/$app/update-$app-repo.sh" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-exec /usr/local/bin/rpm-repo-sync --repo $app --keep 3
-EOF
-  chmod 0755 "/root/$app/update-$app-repo.sh"
+  install -m 0755 "$bundle_dir/services/$app/update.sh" "/root/$app/.update-$app-repo.sh.new"
+  mv -f "/root/$app/.update-$app-repo.sh.new" "/root/$app/update-$app-repo.sh"
 done
 
-# Leave the original virtual host and repo definitions intact. The small
-# include displays complete filenames and avoids caching the mutable entry point.
-cat > /etc/httpd/conf.d/rpm-repo-sync.conf <<'EOF'
+cat > /etc/httpd/conf.d/rpm-repo-sync.conf <<'APACHE'
 <IfModule autoindex_module>
     <Directory "/var/www/html">
         IndexOptions FancyIndexing HTMLTable VersionSort NameWidth=*
@@ -88,21 +121,17 @@ cat > /etc/httpd/conf.d/rpm-repo-sync.conf <<'EOF'
         </FilesMatch>
     </Directory>
 </IfModule>
-EOF
+APACHE
 if ! httpd -t; then
-  if [[ -f "$backup_dir/rpm-repo-sync.conf" ]]; then
-    cp -a "$backup_dir/rpm-repo-sync.conf" /etc/httpd/conf.d/rpm-repo-sync.conf
+  if [[ -f $backup_dir/conf.d-rpm-repo-sync.conf ]]; then
+    cp -a "$backup_dir/conf.d-rpm-repo-sync.conf" /etc/httpd/conf.d/rpm-repo-sync.conf
   else
-    rm -f /etc/httpd/conf.d/rpm-repo-sync.conf
+    mv /etc/httpd/conf.d/rpm-repo-sync.conf "$backup_dir/rejected-apache.conf"
   fi
-  echo 'Apache configuration check failed; cache include restored. Original cron is still active.' >&2
-  exit 1
+  echo 'Apache validation failed; its prior include was restored. Cron was not changed.' >&2; exit 1
 fi
-if systemctl is-active --quiet httpd; then
-  systemctl restart httpd
-fi
-
-cat > /etc/logrotate.d/rpm-repo-sync <<'EOF'
+if systemctl is-active --quiet httpd; then systemctl restart httpd; fi
+cat > /etc/logrotate.d/rpm-repo-sync <<'LOGROTATE'
 /var/log/rpm-repo-sync/*.log {
     daily
     rotate 7
@@ -113,26 +142,24 @@ cat > /etc/logrotate.d/rpm-repo-sync <<'EOF'
     copytruncate
     su root root
 }
-EOF
-
-# Preserve unrelated cron jobs. Spread these three downloads over 20 minutes.
-awk '!/\/root\/(bitwarden|citrix|rambox)\/update-(bitwarden|citrix|rambox)-repo\.sh/' \
+LOGROTATE
+/usr/bin/python3 "$bundle_dir/common/install_config.py" cron "$backup_dir/plan.json" \
   "$backup_dir/root.crontab" > "$backup_dir/new.crontab"
-cat >> "$backup_dir/new.crontab" <<'EOF'
-0 0 * * * /bin/bash /root/bitwarden/update-bitwarden-repo.sh >> /var/log/rpm-repo-sync/cron.log 2>&1
-10 0 * * * /bin/bash /root/citrix/update-citrix-repo.sh >> /var/log/rpm-repo-sync/cron.log 2>&1
-20 0 * * * /bin/bash /root/rambox/update-rambox-repo.sh >> /var/log/rpm-repo-sync/cron.log 2>&1
-EOF
 crontab "$backup_dir/new.crontab"
 systemctl enable --now crond
 systemctl restart crond
-
-echo 'Installed. Running the first sync for all three repositories.'
-echo 'Existing packages stay available until each replacement repository validates.'
-if /usr/local/bin/rpm-repo-sync --repo all --keep 3; then
-  echo "First sync completed. Configuration/script backup: $backup_dir"
+flock -u 9
+exec 9>&-
+echo "Installed selected services. Configuration/code backup: $backup_dir"
+if (( run_sync )); then
+  failed=0
+  for app in "${selected[@]}"; do
+    /usr/local/bin/rpm-repo-sync --repo "$app" --keep 3 || failed=1
+  done
+  if (( failed )); then
+    echo 'A selected sync failed. Check /var/log/rpm-repo-sync/*.log; existing data is preserved until publication validates.' >&2
+    exit 1
+  fi
 else
-  echo 'One or more repositories did not update. Check /var/log/rpm-repo-sync/*.log and retry:' >&2
-  echo '  rpm-repo-sync --repo all' >&2
-  exit 1
+  echo 'Initial sync skipped. Run rpm-repo-sync --repo SERVICE when ready.'
 fi

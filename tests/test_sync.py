@@ -18,11 +18,13 @@ from unittest import mock
 import requests
 import rpm
 
-SOURCE = Path(__file__).resolve().parents[1] / "rpm_repo_sync.py"
-spec = importlib.util.spec_from_file_location("mirror", SOURCE)
-mirror = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = mirror
-spec.loader.exec_module(mirror)
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from common import engine as mirror
+from common.registry import load_service
+BITWARDEN = load_service(ROOT / "services", "bitwarden")
+CITRIX = load_service(ROOT / "services", "citrix")
+RAMBOX = load_service(ROOT / "services", "rambox")
 
 
 def p(version, epoch="0", release="1", arch="x86_64", name="bitwarden", fresh=False):
@@ -88,6 +90,19 @@ class RetentionTests(unittest.TestCase):
 
 
 class DiscoveryTests(unittest.TestCase):
+    def test_bitwarden_module_resolves_official_filename_and_digest(self):
+        response = mock.MagicMock()
+        response.headers = {"Content-Disposition": 'attachment; filename="Bitwarden-2026.9.1-x86_64.rpm"', "Content-Length": "123"}
+        response.url = "https://example.test/file.rpm"
+        response.__enter__.return_value = response
+        session = mock.Mock()
+        session.get.return_value = response
+        with mock.patch.object(BITWARDEN.module, "json_get", return_value={"assets": [{"name": "Bitwarden-2026.9.1-x86_64.rpm", "digest": "sha256:" + "a" * 64, "size": 123}]}):
+            asset = BITWARDEN.discover(session)[0]
+        self.assertEqual(asset.filename, "Bitwarden-2026.9.1-x86_64.rpm")
+        self.assertEqual(asset.checksum, "a" * 64)
+        self.assertEqual(asset.names, {"bitwarden"})
+
     def test_citrix_selects_rpm_sections_and_checksum(self):
         parts = []
         for heading, name in (("RedHat Full Package", "ICAClient"), ("USB Support Package", "ctxusb"),
@@ -101,30 +116,30 @@ class DiscoveryTests(unittest.TestCase):
         response.__enter__.return_value = response
         s = mock.Mock()
         s.get.return_value = response
-        assets = mirror.discover_citrix(s)
+        assets = CITRIX.discover(s)
         self.assertEqual(len(assets), 3)
         self.assertTrue(all(a.checksum == "a" * 64 for a in assets))
         self.assertTrue(all(a.url.startswith("https://downloads.citrix.com/") for a in assets))
 
     def test_rambox_rejects_missing_x64_asset(self):
-        with mock.patch.object(mirror, "json_get", return_value={"assets": [{"name": "Rambox-arm64.rpm"}]}):
+        with mock.patch.object(RAMBOX.module, "json_get", return_value={"assets": [{"name": "Rambox-arm64.rpm"}]}):
             with self.assertRaises(mirror.SyncError):
-                mirror.discover_rambox(None)
+                RAMBOX.discover(None)
 
     def test_rambox_falls_back_to_latest_stable_rpm(self):
         asset = {"name": "Rambox-2.7.1-linux-x64.rpm", "browser_download_url": "https://example.test/app.rpm"}
         latest = {"tag_name": "v3.0.0", "assets": []}
         beta = {"tag_name": "v2.7.2-beta.1", "prerelease": True, "assets": [asset]}
         stable = {"tag_name": "v2.7.1", "assets": [asset]}
-        with mock.patch.object(mirror, "json_get", side_effect=[latest, [latest, beta, stable]]):
-            found = mirror.discover_rambox(None)
+        with mock.patch.object(RAMBOX.module, "json_get", side_effect=[latest, [latest, beta, stable]]):
+            found = RAMBOX.discover(None)
         self.assertEqual(found[0].filename, "Rambox-2.7.1-linux-x64.rpm")
         self.assertEqual(found[0].revision, "v2.7.1")
 
     def test_rambox_accepts_generic_single_rpm_filename(self):
         release = {"tag_name": "v4", "assets": [{"name": "Rambox-4.rpm", "browser_download_url": "https://example.test/app.rpm"}]}
-        with mock.patch.object(mirror, "json_get", return_value=release):
-            self.assertEqual(mirror.discover_rambox(None)[0].filename, "Rambox-4.rpm")
+        with mock.patch.object(RAMBOX.module, "json_get", return_value=release):
+            self.assertEqual(RAMBOX.discover(None)[0].filename, "Rambox-4.rpm")
 
 
 @unittest.skipUnless(shutil.which("rpmbuild") and shutil.which("createrepo_c"), "rpm-build and createrepo_c required")
@@ -214,8 +229,8 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
 
     def run_sync(self, asset, dry_run=False):
         with mock.patch.object(mirror, "session", side_effect=self.local_session), \
-             mock.patch.object(mirror, "discover_bitwarden", return_value=[asset]):
-            mirror.sync("bitwarden", self.web, self.state, keep=3, dry_run=dry_run)
+             mock.patch.object(BITWARDEN.module, "discover", return_value=[asset]):
+            mirror.sync(BITWARDEN, self.web, self.state, keep=3, dry_run=dry_run)
 
     def test_real_rpm_validation_rejects_corrupt_payload(self):
         path = self.root / "corrupt.rpm"
@@ -225,13 +240,26 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
         with self.assertRaises(mirror.SyncError):
             mirror.inspect_package(path, {"bitwarden"})
 
+    def test_engine_supports_an_additional_service_without_core_changes(self):
+        from common.registry import Service
+        config = dataclasses.replace(BITWARDEN.config, id="demo")
+        with self.serve(self.fixtures["4.0"].read_bytes()) as url:
+            module = mock.Mock()
+            module.discover.return_value = [self.asset("4.0", url)]
+            with mock.patch.object(mirror, "session", side_effect=self.local_session):
+                mirror.sync(Service(config, module), self.web, self.state)
+        packages = mirror.inventory(self.web / "demo", config.package_names)
+        self.assertEqual(len(packages), 1)
+        mirror.validate_metadata(self.web / "demo", packages)
+        self.assertTrue((self.state / "demo/state.json").is_file())
+
     def test_migration_three_versions_original_bytes_and_noop(self):
         self.seed(("1.0", "2.0", "3.0"))
         expected = self.fixtures["4.0"].read_bytes()
         with self.serve(expected) as url:
             asset = self.asset("4.0", url)
             self.run_sync(asset)
-            packages = mirror.inventory(self.repo, "bitwarden")
+            packages = mirror.inventory(self.repo, BITWARDEN.config.package_names)
             self.assertEqual({p.evr[1] for p in packages}, {"2.0", "3.0", "4.0"})
             self.assertEqual(len(list(self.repo.glob("*.rpm"))), 0)
             fresh = next(p for p in packages if p.evr[1] == "4.0")
@@ -250,7 +278,7 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
         with self.serve(self.fixtures["3.0"].read_bytes()) as url:
             asset = self.asset("3.0", url)
             self.run_sync(asset)
-            packages = mirror.inventory(self.repo, "bitwarden")
+            packages = mirror.inventory(self.repo, BITWARDEN.config.package_names)
             before = {package.evr: package.path.read_bytes() for package in packages}
             legacy_paths = []
             for package in packages:
@@ -261,7 +289,7 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
             with mock.patch.object(mirror, "inspect_package", wraps=mirror.inspect_package) as inspected:
                 self.run_sync(asset)
                 self.assertFalse(any(call.kwargs.get("fresh") is True for call in inspected.call_args_list))
-            packages = mirror.inventory(self.repo, "bitwarden")
+            packages = mirror.inventory(self.repo, BITWARDEN.config.package_names)
             self.assertEqual({package.evr: package.path.read_bytes() for package in packages}, before)
             self.assertTrue(all(package.path.name.startswith("bitwarden-") for package in packages))
             self.assertTrue(all(not path.exists() for path in legacy_paths))
@@ -274,7 +302,7 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
             asset = self.asset("4.0", url)
             self.run_sync(asset)
             before = (self.repo / "repodata/repomd.xml").read_bytes()
-            package = next(p for p in mirror.inventory(self.repo, "bitwarden") if p.evr[1] == "4.0")
+            package = next(p for p in mirror.inventory(self.repo, BITWARDEN.config.package_names) if p.evr[1] == "4.0")
             changed = self.fixtures["1.0"].read_bytes()
             package.path.write_bytes(changed)
             with self.assertRaises(mirror.SyncError):
@@ -342,7 +370,7 @@ echo {version} > %{{buildroot}}/usr/share/mirror-fixture/version.txt
             self.run_sync(self.asset("4.0", url))
         for href in old_refs:
             self.assertTrue((self.repo / href).exists())
-        self.assertEqual({p.evr[1] for p in mirror.inventory(self.repo, "bitwarden")}, {"2.0", "3.0", "4.0"})
+        self.assertEqual({p.evr[1] for p in mirror.inventory(self.repo, BITWARDEN.config.package_names)}, {"2.0", "3.0", "4.0"})
 
     def test_no_digest_source_revision_is_saved_on_unchanged_run(self):
         self.seed(("1.0", "2.0", "3.0"))

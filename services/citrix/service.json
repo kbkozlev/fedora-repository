@@ -1,0 +1,12 @@
+{
+  "id": "citrix",
+  "package_names": [
+    "icaclient",
+    "ctxusb",
+    "ctxappprotection"
+  ],
+  "update_time": "00:10",
+  "dependencies": [
+    "python3-beautifulsoup4"
+  ]
+}
