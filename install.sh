@@ -108,9 +108,17 @@ for app in "${deploy[@]}"; do
   mv -f "/root/$app/.update-$app-repo.sh.new" "/root/$app/update-$app-repo.sh"
 done
 
+# Fedora's welcome LocationMatch disables the root index even when Directory
+# listings are enabled. Keep the original in the private installation backup.
+if [[ -f /etc/httpd/conf.d/welcome.conf ]]; then
+  mv /etc/httpd/conf.d/welcome.conf "$backup_dir/welcome.conf"
+  echo "Disabled Fedora welcome page; backup: $backup_dir/welcome.conf"
+fi
 cat > /etc/httpd/conf.d/rpm-repo-sync.conf <<'APACHE'
 <IfModule autoindex_module>
     <Directory "/var/www/html">
+        Options +Indexes
+        DirectoryIndex disabled
         IndexOptions FancyIndexing HTMLTable VersionSort NameWidth=*
     </Directory>
 </IfModule>
@@ -128,7 +136,10 @@ if ! httpd -t; then
   else
     mv /etc/httpd/conf.d/rpm-repo-sync.conf "$backup_dir/rejected-apache.conf"
   fi
-  echo 'Apache validation failed; its prior include was restored. Cron was not changed.' >&2; exit 1
+  if [[ -f $backup_dir/welcome.conf ]]; then
+    mv "$backup_dir/welcome.conf" /etc/httpd/conf.d/welcome.conf
+  fi
+  echo 'Apache validation failed; prior configuration was restored. Cron was not changed.' >&2; exit 1
 fi
 if systemctl is-active --quiet httpd; then systemctl restart httpd; fi
 cat > /etc/logrotate.d/rpm-repo-sync <<'LOGROTATE'

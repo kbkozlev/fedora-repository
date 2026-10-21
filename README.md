@@ -108,8 +108,11 @@ For a new server, create `/etc/httpd/conf.d/fedora-repo.conf`:
 ```
 
 Directory listings are useful for browsing packages; DNF itself only needs the
-package and metadata URLs. If Fedora's Apache welcome configuration replaces the
-root directory listing, disable that configuration and restart Apache:
+package and metadata URLs. The installer enables listings, disables index-file
+selection under `/var/www/html`, and moves an active Fedora `welcome.conf` into
+its private backup directory. This removes the default test page at `/`.
+For a manual fix before running the installer, disable that configuration and
+restart Apache:
 
 ```bash
 if [ -f /etc/httpd/conf.d/welcome.conf ]; then
@@ -216,7 +219,8 @@ The installer:
 - Creates `/root/<app>/update-<app>-repo.sh` for the selected applications.
 - Preserves unselected applications and unrelated root cron jobs, and updates
   only the selected services' daily schedules.
-- Configures Apache listing/cache options and seven rotated log archives.
+- Enables Apache folder listings, backs up and disables Fedora's welcome page,
+  configures listing/cache options and seven rotated log archives.
 - Backs up existing wrappers, root crontab and updater configuration
   under `/root/repo-updater-backup-<UTC timestamp>`.
 - Runs a first sync only for the requested repositories. A failed sync returns
@@ -322,7 +326,10 @@ Default service schedules use the repository server's configured timezone:
 | Rambox | 00:20 |
 
 Set each service's `update_time` in `services/<id>/service.json` before installing
-or reinstalling that service to use a different daily time.
+or reinstalling that service to use a different daily time. Verify the actual
+installed schedule with `crontab -l` on the server; older installations or local
+customizations may differ. These jobs refresh the server's RPM repositories,
+not the software installed on client machines.
 
 Run an update or a dry run manually on the server:
 
@@ -461,9 +468,18 @@ file to a private directory outside `/var/www/html`, then retry. Failed new
 downloads are discarded automatically. Do not manually rename public RPMs without
 rebuilding their repository metadata.
 
-**Apache serves a welcome page:** check `/etc/httpd/conf.d/welcome.conf`, the
-virtual host shown by `httpd -S`, and `httpd -t`. A welcome-page configuration can
-override the root listing even when the package repository paths work.
+**Apache serves the Fedora Webserver Test Page:** Fedora's active
+`/etc/httpd/conf.d/welcome.conf` can disable the root listing through a
+`LocationMatch` rule and display a test page for the resulting forbidden
+response. Merely changing `IndexOptions` does not enable listings. Update the
+scripts and rerun a selected service's installer with `--no-sync` to apply the
+Apache fix without downloading packages. The installer backs up/disables the
+welcome configuration and sets `Options +Indexes` and `DirectoryIndex disabled`
+for `/var/www/html`. It restores the previous Apache configuration if the syntax
+check fails. Existing virtual hosts and repository files are preserved. If the
+origin works but the public URL still shows the test page, clear the browser
+cache and check any reverse-proxy or Cloudflare cache. For a manual repair, use
+the commands in the Apache setup section.
 
 ## Backups and rollback
 
@@ -476,7 +492,9 @@ a full package backup.
 Use the exact backup directory printed by the installer to restore the previous
 wrappers and root crontab. Restore the saved `installed-updater/` directory to
 `/usr/local/lib/rpm-repo-sync/` to revert the common code and service modules,
-and restore the saved launcher to `/usr/local/bin/rpm-repo-sync`. Restore the prior Apache include
+and restore the saved launcher to `/usr/local/bin/rpm-repo-sync`. To re-enable
+Fedora's test page, restore the saved `welcome.conf` to `/etc/httpd/conf.d/`.
+Restore the prior Apache include
 and timezone as needed, validate Apache, and restart Apache and cron. A full
 rollback of pruned package contents requires the container or filesystem backup.
 
