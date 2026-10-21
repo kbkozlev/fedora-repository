@@ -412,11 +412,24 @@ integrity and do not replace vendor signature verification.
 ### Select one upstream release for a single run
 
 Rambox supports an exact GitHub release tag, independently of the release
-marked "latest":
+marked "latest". GitHub\'s upstream "latest" selection may point to an older
+version than other published releases.
+
+If the server already has an older updater, first deploy the new code there.
+Pulling the Git checkout alone does not update the installed scripts:
+
+```bash
+git -C /opt/fedora-repository pull --ff-only &&
+bash /opt/fedora-repository/services/rambox/install.sh --no-sync
+```
+
+Then download and publish the desired release once:
 
 ```bash
 /usr/bin/python3 /usr/local/sbin/update-rambox-repo.py --release v3.1.1
 ```
+
+Replace `v3.1.1` with the exact tag you want. No crontab change is needed.
 
 The shared CLI equivalent is `rpm-repo-sync --repo rambox --release v3.1.1`.
 Use the full tag including `v` where the upstream tag includes it. Add
@@ -544,6 +557,11 @@ pages and client-side RPM dependencies may also change. Check the output and
 logs after an upgrade.
 
 ## Troubleshooting
+
+**`--release` is reported as an unrecognized argument:** the installed updater
+is older than the Git checkout. Pull the latest code and rerun the Rambox
+installer with `--no-sync`, as shown above. Check the installed command with
+`/usr/bin/python3 /usr/local/sbin/update-rambox-repo.py --help`.
 
 **Repository loads, but a package cannot be installed:** inspect DNF's dependency
 error. Hosting an RPM does not change its dependencies or supported distributions.
