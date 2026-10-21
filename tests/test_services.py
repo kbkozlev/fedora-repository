@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from common import cli, engine
 from common.config import read_config, service_ids
-from common.install_config import deploy_code, migrate_cron, plan_install
+from common.install_config import deploy_code, plan_install
 from common.registry import load_service
 
 
@@ -75,39 +75,27 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(plan["selected"], ["bitwarden"])
         self.assertEqual(plan["deploy"], ["bitwarden", "citrix", "rambox"])
         self.assertEqual(plan["migrated"], ["bitwarden", "citrix", "rambox"])
-        self.assertEqual(plan["schedules"], {"bitwarden": "00:00"})
-
-    def test_cron_replaces_only_selected_schedule_without_duplicates(self):
-        previous = ('0 0 * * * /bin/bash /root/bitwarden/update-bitwarden-repo.sh\n'
-                    '10 0 * * * /bin/bash /root/citrix/update-citrix-repo.sh\n'
-                    '5 1 * * * /root/backup.sh\n'
-                    '# /root/bitwarden/update-bitwarden-repo.sh is a managed task\n')
-        changed = migrate_cron(previous, {"bitwarden": "02:35"})
-        self.assertIn('35 2 * * * /bin/bash /root/bitwarden/update-bitwarden-repo.sh', changed)
-        self.assertIn('10 0 * * * /bin/bash /root/citrix/update-citrix-repo.sh', changed)
-        self.assertIn('5 1 * * * /root/backup.sh', changed)
-        self.assertIn('# /root/bitwarden/', changed)
-        self.assertEqual(migrate_cron(changed, {"bitwarden": "02:35"}), changed)
+        self.assertNotIn("schedules", plan)
 
     def test_new_service_is_discovered_without_core_registry_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = root / "demo"
             app.mkdir()
-            (app / "service.json").write_text(json.dumps({"id": "demo", "package_names": ["DemoApp"], "update_time": "01:30"}))
+            (app / "service.json").write_text(json.dumps({"id": "demo", "package_names": ["DemoApp"]}))
             (app / "service.py").write_text('from common.models import Asset\ndef discover(session, config):\n    return [Asset("demo.rpm", "https://example.test/demo.rpm", config.package_names)]\n')
             service = load_service(root, "demo")
             self.assertEqual(service_ids(root), ["demo"])
             self.assertEqual(service.discover(None)[0].names, {"demoapp"})
-            self.assertEqual(service.config.update_time, "01:30")
+            self.assertFalse(hasattr(service.config, "update_time"))
 
-    def test_config_rejects_unsafe_names_and_invalid_schedules(self):
+    def test_config_rejects_unsafe_names_and_dependencies(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = Path(tmp) / "demo"
             app.mkdir()
             (app / "service.py").write_text('def discover(session, config): return []\n')
-            for updates in ({"id": "../demo"}, {"package_names": ["../bad"]}, {"update_time": "24:00"}, {"dependencies": ["pkg;echo bad"]}):
-                config = {"id": "demo", "package_names": ["demo"], "update_time": "00:00"}
+            for updates in ({"id": "../demo"}, {"package_names": ["../bad"]}, {"dependencies": ["pkg;echo bad"]}):
+                config = {"id": "demo", "package_names": ["demo"]}
                 config.update(updates)
                 (app / "service.json").write_text(json.dumps(config))
                 with self.assertRaises(ValueError):

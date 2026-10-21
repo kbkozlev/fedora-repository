@@ -14,8 +14,8 @@ and timezone are deployment choices; Proxmox and Cloudflare are optional.
 
 ### Shared engine, separate services
 
-Each application has its own directory, discovery script, installer and update
-script. The shared engine handles downloads, RPM checks, retention, locking and
+Each application has its own directory, discovery script, installer and Python
+update script. The shared engine handles downloads, RPM checks, retention, locking and
 metadata publication. Service registration is automatic: a directory with a
 valid `service.json` and `service.py` is enough; there is no application list to
 edit in the common code.
@@ -24,11 +24,16 @@ edit in the common code.
 | --- | --- | --- |
 | Common engine | `common/engine.py`, `common/models.py`, `common/http.py` | Download validation, three-version retention, readable filenames and safe publication |
 | Service discovery | `services/<id>/service.py` | Find that application's official RPM URLs, checksums, sizes and revisions |
-| Service configuration | `services/<id>/service.json` | Allowed RPM names, update time and extra Fedora dependencies |
-| Service entry points | `services/<id>/install.sh`, `update.sh` | Install or update that application independently |
+| Service configuration | `services/<id>/service.json` | Allowed RPM names and extra Fedora dependencies |
+| Service entry points | `services/<id>/install.sh`, `update.py` | Install or update that application independently |
 | Shared installation / CLI | `install.sh`, `rpm_repo_sync.py`, `common/` | Install selected modules and run one service or all installed services |
 
-For example, installing Bitwarden does not install or schedule Citrix or Rambox
+Each `update.py` runs the complete download, three-version retention and
+repository publication process for its own service. Only the common mechanics
+(RPM checks, downloads, retention, locking and metadata) are shared.
+Scheduling belongs entirely to the administrator through `crontab -e`.
+
+For example, installing Bitwarden does not install Citrix or Rambox
 on a new server. Bitwarden and Rambox do not need Citrix's BeautifulSoup dependency.
 Existing services retain their modules, state, packages and cron jobs when you
 add or update another service. The common engine is a shared dependency and is
@@ -209,16 +214,19 @@ bash /opt/fedora-repository/install.sh --all
 ```
 
 Running the installer without a selection prints usage and does not install
-everything. Add `--no-sync` to install code and schedules without immediately
-running downloads. Future cron runs still use the configured daily schedules.
+everything. Add `--no-sync` to install code without immediately running
+downloads. The installer does not add, remove or change any scheduled job;
+configure cron separately as shown below.
 
 The installer:
 
 - Installs runtime dependencies and `/usr/local/bin/rpm-repo-sync`.
 - Preserves the server's existing timezone by default.
-- Creates `/root/<app>/update-<app>-repo.sh` for the selected applications.
-- Preserves unselected applications and unrelated root cron jobs, and updates
-  only the selected services' daily schedules.
+- Creates `/usr/local/sbin/update-<app>-repo.py` links to the selected services'
+  Python entry points. These can be called directly with `/usr/bin/python3`.
+- Preserves unselected applications and all existing cron jobs.
+- Retains `/root/<app>/update-<app>-repo.sh` as compatibility wrappers; any old
+  cron entries using them must be replaced manually.
 - Enables Apache folder listings, backs up and disables Fedora's welcome page,
   configures listing/cache options and seven rotated log archives.
 - Backs up existing wrappers, root crontab and updater configuration
@@ -237,7 +245,8 @@ bash /opt/fedora-repository/services/bitwarden/install.sh --timezone UTC
 With `--timezone`, the installer also backs up the previous timezone and installs
 timezone data if needed. Without that option, it does not change `/etc/localtime`
 or call `timedatectl`. Updater log timestamps are explicitly in UTC regardless of
-the server timezone. Apache and cron are restarted after configuration updates.
+the server timezone. Apache is restarted after configuration validation. Cron
+is restarted only when an explicit timezone change was requested.
 
 When upgrading the former bundled installation for the first time, the installer
 preserves its previously installed services by creating their separate modules.
@@ -290,7 +299,9 @@ dnf --refresh --repo=citrix-workspace list --available --showduplicates
 | `rpm_repo_sync.py` | Small CLI entry point for the shared engine |
 | `common/` | Shared engine, HTTP/model helpers, manifest loading and installation planning |
 | `install.sh` | Installs selected service modules and shared dependencies |
-| `services/<app>/` | That application's discovery script, configuration, installer and update script |
+| `services/<app>/` | That application's discovery, configuration, installer and Python update script |
+| `/usr/local/sbin/update-<app>-repo.py` | Direct Python entry point for that service |
+| Root crontab (`crontab -e`) | Administrator-controlled scheduling |
 | `examples/myapp/` | Starter service that can be copied and adapted |
 | `tests/` | Shared engine, provider discovery, selective installation and integration checks |
 | `VALIDATION.md` | Checks completed and test environment limitations |
@@ -317,19 +328,50 @@ the updater does not change the repository's `baseurl` or the RPM identity.
 
 ## Daily updates and maintenance
 
-Default service schedules use the repository server's configured timezone:
+The installer **never manages scheduling**. There is no schedule in
+`service.json`, no cron-file generator and no installed `/etc/cron.d/` file.
+Each application has one Python script; decide when to run it in root's crontab.
 
-| Application | Daily time |
-| --- | --- |
-| Bitwarden | 00:00 |
-| Citrix | 00:10 |
-| Rambox | 00:20 |
+On the repository server, run as root:
 
-Set each service's `update_time` in `services/<id>/service.json` before installing
-or reinstalling that service to use a different daily time. Verify the actual
-installed schedule with `crontab -l` on the server; older installations or local
-customizations may differ. These jobs refresh the server's RPM repositories,
-not the software installed on client machines.
+```bash
+crontab -e
+```
+
+Add these entries for the services you host:
+
+```cron
+# Refresh each repository daily; choose times outside backups/maintenance.
+0 4 * * * /usr/bin/python3 /usr/local/sbin/update-bitwarden-repo.py
+20 4 * * * /usr/bin/python3 /usr/local/sbin/update-citrix-repo.py
+40 4 * * * /usr/bin/python3 /usr/local/sbin/update-rambox-repo.py
+```
+
+These example times are **04:00, 04:20 and 04:40** in the server's local timezone.
+Change the five cron fields directly to change the schedule. Comment out or
+remove a line to disable that service. Unlike `/etc/cron.d/` files, a personal
+crontab has no `root` user field. View the actual schedule with `crontab -l`.
+Changes take effect without reinstalling scripts or restarting cron, and script
+upgrades never overwrite them.
+
+When upgrading an older installation, **replace** existing
+`/root/<app>/update-<app>-repo.sh` cron lines with the Python entries above rather
+than appending duplicate jobs. The installer leaves old jobs unchanged, so they
+continue to run at their old times until you edit them. Old manifest
+`update_time` keys are ignored. If you manually created separate cron files for
+these same jobs, remove their duplicate entries as part of this migration.
+
+Compare the repository server's timezone with the backup host's timezone.
+Spacing jobs reduces simultaneous work but does not guarantee the previous job
+has finished or detect an overlong backup. The updater retains three versions
+per RPM name and architecture and prevents overlapping runs of the same service.
+
+Each script writes a service log under `/var/log/rpm-repo-sync/`. To also capture
+console output (including early failures), optionally append a shell redirect:
+
+```cron
+0 4 * * * /usr/bin/python3 /usr/local/sbin/update-bitwarden-repo.py >> /var/log/rpm-repo-sync/bitwarden-cron.log 2>&1
+```
 
 Run an update or a dry run manually on the server:
 
@@ -338,11 +380,12 @@ rpm-repo-sync --repo all
 rpm-repo-sync --repo citrix
 rpm-repo-sync --repo all --dry-run
 rpm-repo-sync --list
-bash /opt/fedora-repository/services/bitwarden/update.sh
+/usr/bin/python3 /usr/local/sbin/update-bitwarden-repo.py
+/usr/bin/python3 /usr/local/sbin/update-citrix-repo.py --dry-run
 ```
 
 Dry runs can download and validate in staging but do not publish or prune. The
-default retention is three versions; installed wrappers explicitly use `--keep 3`.
+default retention is three versions; Python entry points inherit the CLI default of `--keep 3`.
 Locks prevent overlapping runs for the same repository. Unchanged package sets
 skip metadata regeneration. Abandoned staging is cleaned on the next run.
 `--repo all` operates on services present in the **installed** module directory.
@@ -350,7 +393,6 @@ A failure in one service does not stop the remaining services from updating.
 
 ```bash
 tail -n 50 /var/log/rpm-repo-sync/citrix.log
-tail -n 50 /var/log/rpm-repo-sync/cron.log
 du -h --max-depth=2 /var/www/html
 df -h /var/www/html
 systemctl status httpd crond --no-pager
@@ -395,10 +437,10 @@ cd /opt/fedora-repository
 cp -a examples/myapp services/myapp
 ```
 
-The service has four files:
+The service has these files:
 
-1. **`service.json`** declares its ID, allowed RPM header names, update time and
-   optional Fedora dependencies. The ID must match the directory name. Use a
+1. **`service.json`** declares its ID, allowed RPM header names and optional
+   Fedora dependencies. The ID must match the directory name. Use a
    lowercase ID with letters, digits, `_` or `-`. RPM header names are checked
    without regard to case.
 2. **`service.py`** provides `discover(session, config)` and returns a non-empty
@@ -406,12 +448,14 @@ The service has four files:
    allowed package names and, when available, checksum, size and upstream revision.
    This is where vendor-specific HTML/API/redirect handling belongs.
 3. **`install.sh`** calls the common installer with that service's ID.
-4. **`update.sh`** calls the installed CLI with `--repo <id> --keep 3`.
+4. **`update.py`** calls the shared engine for that service only; this is the
+   entry point to use directly or from cron.
+5. **`update.sh`** provides a compatibility shell entry point.
 
 Edit the placeholder vendor URL and RPM names before installation. If you rename
 the service, update the directory name, manifest ID and the IDs in both shell
-scripts. For multi-package applications, list all allowed RPM names in the
-manifest and return the corresponding assets from discovery.
+scripts and `update.py`. For multi-package applications, list all allowed RPM
+names in the manifest and return the corresponding assets from discovery.
 
 The example resolves the final URL and filename, length, ETag and Last-Modified
 headers. A fixed `latest.rpm` URL without a stable revision is deliberately fetched
@@ -430,10 +474,42 @@ rpm-repo-sync --repo myapp
 
 The placeholder example fails before downloading until you configure a real URL.
 Create `/var/www/html/myapp/myapp.repo` with your own `baseurl`, following the
-client configuration examples above. The installer derives that service's cron
-job from `update_time`. No changes to the common engine, a central app registry,
-or a hardcoded installer list are required. The directory under `examples/` is
-never discovered or installed unless you copy it into `services/` and select it.
+client configuration examples above. Add a schedule yourself with `crontab -e`,
+for example `0 5 * * * /usr/bin/python3 /usr/local/sbin/update-myapp-repo.py`.
+No changes to the common engine, a central app registry or a hardcoded installer
+list are required. The directory under `examples/` is never discovered or installed unless you copy it into `services/` and select it.
+
+## Fedora server upgrades
+
+Use Fedora's packages for Python, `python3-rpm`, Requests, Cronie, Apache and
+`createrepo_c`. There is no virtual environment, pip dependency set, pinned
+Python version or hardcoded Fedora release number. RPM digest checks and
+metadata creation use `rpmkeys` and `createrepo_c`; version comparison uses the
+system librpm bindings. Only vendor discovery needs service-specific logic.
+The launcher and cron examples use `/usr/bin/python3`, so the distribution
+supplies Python and matching RPM bindings together.
+
+Back up `/var/www/html`, `/var/lib/rpm-repo-sync`, `/usr/local/lib/rpm-repo-sync`,
+Apache configuration and root's crontab before upgrading. Follow Fedora's
+supported upgrade process for your hosting environment. Afterwards verify:
+
+```bash
+rpm -q python3 python3-rpm python3-requests rpm createrepo_c cronie httpd
+httpd -t
+systemctl status httpd crond --no-pager
+crontab -l
+/usr/bin/python3 /usr/local/sbin/update-bitwarden-repo.py --dry-run
+```
+
+Rerun a selected service's installer with `--no-sync` if its dependencies or
+entry-point links need restoring. Reinstallation preserves repository data,
+state and your crontab. The installer restores standard SELinux labels where
+SELinux is active and disables a newly present Fedora welcome page again.
+
+This reduces dependence on a particular Fedora version; compatibility with
+all future RPM/Python/Apache versions cannot be guaranteed. Vendor download
+pages and client-side RPM dependencies may also change. Check the output and
+logs after an upgrade.
 
 ## Troubleshooting
 
@@ -530,12 +606,12 @@ it does not enable unattended installations on client machines.
 
 ## Validation and documentation
 
-The updater has 49 automated checks, including RPM version ordering, three-version
+The updater has 52 automated checks, including RPM version ordering, three-version
 retention, downloads that fail without pruning history, readable filename
 migration, immutable package URLs, metadata validation, locks and unchanged runs.
 The suite also checks independent service loading, selective dependencies,
-preservation of other cron jobs, bundled-install migration and adding a service
-without editing the common engine.
+direct Python entry points, symlinks from unrelated working directories,
+selective deployment and adding a service without editing the common engine.
 See [VALIDATION.md](VALIDATION.md) for the completed checks and environment limits.
 
 To run the tests on Fedora:

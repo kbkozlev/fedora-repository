@@ -1,6 +1,6 @@
 # Validation completed
 
-All **49 automated checks passed**. The integration checks built actual small
+All **52 automated checks passed** on 2026-10-21. The integration checks built actual small
 RPMs with `rpmbuild`, downloaded them from a local HTTP server, verified their
 digests with `rpmkeys`, and generated real repository metadata with
 `createrepo_c`.
@@ -53,9 +53,13 @@ Verified behaviors:
   unselected vendor code and existing state files.
 - Migration from the former bundled updater preserves its installed service
   modules while immediate sync remains limited to the requested services.
-- Cron migration preserves unselected services, unrelated jobs and comments;
-  repeat installation does not add duplicate schedules.
-- Invalid IDs, package names, dependencies and schedules are rejected.
+- Each direct Python entry point invokes a complete sync for its own service,
+  retains three versions by default, and accepts dry-run options.
+- Installed Python entry points work through symlinks from an unrelated working
+  directory. Updating one service preserves other services' Python scripts.
+- Legacy update_time keys are ignored for compatibility with older installed
+  manifests; scheduling is absent from service configuration and CLI listings.
+- Invalid IDs, package names and dependencies are rejected.
 - Installation requires an explicit selection; every service has its own
   installer entry point.
 - The starter template refuses its placeholder URL and revalidates fixed
@@ -64,8 +68,10 @@ Verified behaviors:
   alone. Explicit timezone selection, minimal-container fallback and rejection
   of invalid zone names are tested with mocked shell commands.
 
-Separate shell checks passed for the installer syntax and cron migration;
-the cron transformation preserves unrelated jobs.
+Shell syntax checks passed for every installer, wrapper and shell helper.
+Installer inspection confirms that it only reads root's crontab for backup; it
+does not write cron files, generate schedules, or modify existing jobs. The
+README provides manual crontab examples for 04:00, 04:20 and 04:40.
 
 Live upstream discovery was checked on 2026-10-06:
 
@@ -82,8 +88,10 @@ interfaces were checked against official documentation. RPM integrity checks
 explicitly select the digest verification level for this read-only operation;
 no global RPM policy is changed.
 
-The installer has passed shell syntax checks, and code deployment, migration
-planning and optional timezone behavior were tested independently. A complete
+The installer has passed shell syntax checks, and code deployment, direct
+Python entry points, migration planning and optional timezone behavior were
+tested independently. No complete Fedora release upgrade was performed; future
+release compatibility is not claimed. A complete
 installation involving Fedora package management and live system services was
 not executed in this test environment. Full current vendor RPMs were not
 downloaded here. The installer validates Apache's configuration and runs a sync

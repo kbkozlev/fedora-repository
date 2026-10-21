@@ -1,6 +1,7 @@
 {
   "id": "myapp",
-  "package_names": ["myapp"],
-  "update_time": "01:00",
+  "package_names": [
+    "myapp"
+  ],
   "dependencies": []
 }

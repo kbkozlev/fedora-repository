@@ -72,6 +72,10 @@ mapfile -t extra_dependencies < "$backup_dir/dependencies.txt"
 if [[ -n $timezone ]]; then extra_dependencies+=(tzdata); fi
 for app in "${deploy[@]}"; do
   test -f "$bundle_dir/services/$app/update.sh"
+  test -f "$bundle_dir/services/$app/update.py"
+  if [[ -e /usr/local/sbin/update-$app-repo.py || -L /usr/local/sbin/update-$app-repo.py ]]; then
+    cp -a "/usr/local/sbin/update-$app-repo.py" "$backup_dir/update-$app-repo.py"
+  fi
   if [[ -f /root/$app/update-$app-repo.sh ]]; then
     cp -a "/root/$app/update-$app-repo.sh" "$backup_dir/update-$app-repo.sh"
   fi
@@ -81,7 +85,10 @@ echo "Installing shared dependencies and selected service requirements; backup: 
 dnf -y install python3 python3-requests python3-rpm rpm createrepo_c cronie \
   logrotate procps-ng util-linux httpd "${extra_dependencies[@]}"
 command -v rpmkeys createrepo_c > /dev/null
-/usr/bin/python3 -m compileall -q "$bundle_dir/common" "$bundle_dir/services" "$bundle_dir/rpm_repo_sync.py"
+/usr/bin/python3 -m compileall -q "$bundle_dir/common" "$bundle_dir/rpm_repo_sync.py"
+for app in "${deploy[@]}"; do
+  /usr/bin/python3 -m compileall -q "$bundle_dir/services/$app"
+done
 PYTHONPATH="$bundle_dir" /usr/bin/python3 - "$bundle_dir/services" "${deploy[@]}" <<'PY'
 import sys
 from common.registry import load_service
@@ -91,7 +98,7 @@ PY
 source "$bundle_dir/common/timezone.sh"
 configure_timezone "$timezone"
 echo "Server local time: $(date '+%Y-%m-%d %H:%M:%S %Z %z')"
-install -d -m 0755 "$installed_dir" /var/log/rpm-repo-sync
+install -d -m 0755 "$installed_dir" /usr/local/sbin /var/log/rpm-repo-sync
 install -d -m 0700 /var/www/.rpm-repo-sync-work
 # Replace each code file atomically while the installation lock is held.
 /usr/bin/python3 "$bundle_dir/common/install_config.py" deploy \
@@ -103,6 +110,7 @@ LAUNCHER
 install -m 0755 "$backup_dir/launcher.new" /usr/local/bin/.rpm-repo-sync.new
 mv -f /usr/local/bin/.rpm-repo-sync.new /usr/local/bin/rpm-repo-sync
 for app in "${deploy[@]}"; do
+  ln -sfnT "$installed_dir/services/$app/update.py" "/usr/local/sbin/update-$app-repo.py"
   install -d -m 0700 "/root/$app"
   install -m 0755 "$bundle_dir/services/$app/update.sh" "/root/$app/.update-$app-repo.sh.new"
   mv -f "/root/$app/.update-$app-repo.sh.new" "/root/$app/update-$app-repo.sh"
@@ -154,14 +162,22 @@ cat > /etc/logrotate.d/rpm-repo-sync <<'LOGROTATE'
     su root root
 }
 LOGROTATE
-/usr/bin/python3 "$bundle_dir/common/install_config.py" cron "$backup_dir/plan.json" \
-  "$backup_dir/root.crontab" > "$backup_dir/new.crontab"
-crontab "$backup_dir/new.crontab"
+# Scheduling belongs to the administrator: never rewrite cron on installation.
+if command -v selinuxenabled restorecon > /dev/null && selinuxenabled; then
+  restorecon -R "$installed_dir" /usr/local/bin/rpm-repo-sync
+  for app in "${deploy[@]}"; do
+    restorecon "/usr/local/sbin/update-$app-repo.py"
+  done
+fi
 systemctl enable --now crond
-systemctl restart crond
+if [[ -n $timezone ]]; then systemctl restart crond; fi
 flock -u 9
 exec 9>&-
 echo "Installed selected services. Configuration/code backup: $backup_dir"
+echo "Cron was not changed. Use crontab -e to schedule these scripts:"
+for app in "${selected[@]}"; do
+  echo "  /usr/bin/python3 /usr/local/sbin/update-$app-repo.py"
+done
 if (( run_sync )); then
   failed=0
   for app in "${selected[@]}"; do

@@ -1,10 +1,9 @@
-"""Plan selective installation and migrate cron without importing vendor code."""
+"""Plan and deploy selected services without changing cron."""
 import argparse
 import ast
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sys
 import tempfile
@@ -31,22 +30,7 @@ def plan_install(source, installed, requested):
     deploy = sorted(set(selected + migrated))
     configs = [read_config(source / name) for name in deploy]
     return {"selected": selected, "deploy": deploy, "migrated": migrated,
-            "dependencies": sorted({dep for config in configs for dep in config.dependencies}),
-            "schedules": {config.id: config.update_time for config in configs if config.id in selected}}
-
-
-def migrate_cron(previous, schedules):
-    selected = set(schedules)
-    kept = []
-    for line in previous.splitlines():
-        match = re.search(r"/root/([a-z][a-z0-9_-]*)/update-\1-repo\.sh(?:\s|$)", line)
-        if match and match[1] in selected and not line.lstrip().startswith("#"):
-            continue
-        kept.append(line)
-    for name, schedule in sorted(schedules.items()):
-        hour, minute = (int(part) for part in schedule.split(":"))
-        kept.append(f"{minute} {hour} * * * /bin/bash /root/{name}/update-{name}-repo.sh >> /var/log/rpm-repo-sync/cron.log 2>&1")
-    return "\n".join(kept) + "\n"
+            "dependencies": sorted({dep for config in configs for dep in config.dependencies})}
 
 
 def deploy_code(source, target, services):
@@ -55,7 +39,7 @@ def deploy_code(source, target, services):
     files = [Path("rpm_repo_sync.py")] + [p.relative_to(source) for p in (source / "common").glob("*.py")]
     for name in services:
         read_config(source / "services" / name)
-        files += [Path("services") / name / file for file in ("service.json", "service.py", "update.sh")]
+        files += [Path("services") / name / file for file in ("service.json", "service.py", "update.py", "update.sh")]
     for relative in files:
         if not (source / relative).is_file():
             raise ValueError("Required source file is missing: " + str(relative))
@@ -79,9 +63,6 @@ def main():
     plan.add_argument("--source", type=Path, required=True)
     plan.add_argument("--installed", type=Path, required=True)
     plan.add_argument("services", nargs="+")
-    cron = commands.add_parser("cron")
-    cron.add_argument("plan", type=Path)
-    cron.add_argument("previous", type=Path)
     deploy = commands.add_parser("deploy")
     deploy.add_argument("--source", type=Path, required=True)
     deploy.add_argument("--installed", type=Path, required=True)
@@ -89,9 +70,6 @@ def main():
     args = parser.parse_args()
     if args.command == "plan":
         print(json.dumps(plan_install(args.source, args.installed, args.services), indent=2))
-    elif args.command == "cron":
-        data = json.loads(args.plan.read_text())
-        print(migrate_cron(args.previous.read_text(), data["schedules"]), end="")
     else:
         deploy_code(args.source, args.installed, args.services)
 

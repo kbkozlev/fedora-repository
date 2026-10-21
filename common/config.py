@@ -9,7 +9,6 @@ import re
 class ServiceConfig:
     id: str
     package_names: frozenset
-    update_time: str
     dependencies: tuple = ()
 
 
@@ -27,12 +26,11 @@ def read_config(directory):
     names = data.get("package_names")
     if not isinstance(names, list) or not names or any(not isinstance(n, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+\-]*", n) for n in names):
         raise ValueError("package_names must list the allowed RPM header names")
-    schedule = data.get("update_time", "00:00")
-    if not isinstance(schedule, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", schedule):
-        raise ValueError("update_time must be HH:MM in the container's local timezone")
+    # Ignore legacy update_time keys when reading older installed manifests.
+    # Only cron files control scheduling.
     dependencies = data.get("dependencies", [])
     if not isinstance(dependencies, list) or any(not isinstance(n, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+\-]*", n) for n in dependencies):
         raise ValueError("dependencies must list Fedora package names")
     if not (directory / "service.py").is_file():
         raise ValueError("Service has no service.py discovery module: " + service_id)
-    return ServiceConfig(service_id, frozenset(n.casefold() for n in names), schedule, tuple(dependencies))
+    return ServiceConfig(service_id, frozenset(n.casefold() for n in names), tuple(dependencies))

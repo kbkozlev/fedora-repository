@@ -31,7 +31,7 @@ def main(argv=None):
     if args.list:
         for name in available:
             config = read_config(args.services_dir / name)
-            print(f"{name}\t{config.update_time}\t{', '.join(sorted(config.package_names))}")
+            print(f"{name}\t{', '.join(sorted(config.package_names))}")
         return 0
     selected = available if args.repo == "all" else [args.repo]
     if not selected or any(name not in available for name in selected):
