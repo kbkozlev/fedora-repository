@@ -409,6 +409,38 @@ and verified with RPM's internal integrity checks. Missing optional Bitwarden or
 Rambox digests do not prevent a valid HTTPS download; those checks establish
 integrity and do not replace vendor signature verification.
 
+### Select one upstream release for a single run
+
+Rambox supports an exact GitHub release tag, independently of the release
+marked "latest":
+
+```bash
+/usr/bin/python3 /usr/local/sbin/update-rambox-repo.py --release v3.1.1
+```
+
+The shared CLI equivalent is `rpm-repo-sync --repo rambox --release v3.1.1`.
+Use the full tag including `v` where the upstream tag includes it. Add
+`--dry-run` to validate without publishing; a dry run can still download the RPM.
+
+This flag applies **only to that invocation**. It does not edit cron, service
+configuration or store a release pin. The next normal cron run follows GitHub's
+"latest" selection and existing stable-RPM fallback again. A newer version that
+was mirrored explicitly remains eligible for retention, so a later run finding
+an older upstream "latest" does not automatically remove it or downgrade clients.
+Future 3.x releases still need an explicit override until the normal upstream
+selection points to them.
+
+Only the requested tag is fetched. Missing tags, drafts/prereleases, ambiguous
+assets and releases without a compatible RPM fail rather than choosing a
+different release. RPM integrity, upstream checksum checks and newest-three
+retention remain in effect. Requesting an old release does not force retention
+if it falls below the newest three versions already mirrored.
+
+`--release` requires one explicit service; it cannot be used with `--repo all`
+or `--list`. Other providers reject it unless they implement the optional
+`discover_release(session, config, tag)` function in their own `service.py`.
+The common code contains no application-specific release URLs or version rules.
+
 ### Update the scripts from GitHub
 
 For an installation cloned under `/opt/fedora-repository`:
@@ -606,7 +638,7 @@ it does not enable unattended installations on client machines.
 
 ## Validation and documentation
 
-The updater has 52 automated checks, including RPM version ordering, three-version
+The updater has 61 automated checks, including RPM version ordering, three-version
 retention, downloads that fail without pruning history, readable filename
 migration, immutable package URLs, metadata validation, locks and unchanged runs.
 The suite also checks independent service loading, selective dependencies,

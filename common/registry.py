@@ -11,8 +11,14 @@ from common.config import read_config, service_ids
 class Service:
     config: object
     module: object
+    release_tag: str | None = None
 
     def discover(self, session):
+        if self.release_tag is not None:
+            discover_release = getattr(self.module, "discover_release", None)
+            if not callable(discover_release):
+                raise ValueError("--release is not supported by service " + self.config.id)
+            return discover_release(session, self.config, self.release_tag)
         return self.module.discover(session, self.config)
 
 

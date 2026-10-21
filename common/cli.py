@@ -24,9 +24,12 @@ def main(argv=None):
     parser.add_argument("--log-dir", type=Path, default=Path("/var/log/rpm-repo-sync"))
     parser.add_argument("--keep", type=int, default=3)
     parser.add_argument("--dry-run", action="store_true", help="Validate in staging without publishing or pruning")
+    parser.add_argument("--release", metavar="TAG", help="Use an exact upstream release tag for this run (one service; provider must support it)")
     args = parser.parse_args(argv)
     if args.keep < 1:
         parser.error("--keep must be at least 1")
+    if args.release is not None and (not args.release.strip() or args.repo == "all" or args.list):
+        parser.error("--release needs a non-empty tag and one explicit service, without --list")
     available = service_ids(args.services_dir)
     if args.list:
         for name in available:
@@ -61,6 +64,11 @@ def main(argv=None):
                 try:
                     LOG.info("Starting %s repository update", name)
                     service = load_service(args.services_dir, name)
+                    if args.release is not None:
+                        if not callable(getattr(service.module, "discover_release", None)):
+                            raise ValueError("--release is not supported by service " + name)
+                        service.release_tag = args.release
+                        LOG.info("One-time upstream release override: %s", args.release)
                     engine.sync(service, args.web_root, args.state_dir, args.keep, args.dry_run)
                     LOG.info("Completed %s repository update", name)
                 except Exception as exc:

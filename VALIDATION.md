@@ -1,6 +1,6 @@
 # Validation completed
 
-All **52 automated checks passed** on 2026-10-21. The integration checks built actual small
+All **61 automated checks passed** on 2026-10-21. The integration checks built actual small
 RPMs with `rpmbuild`, downloaded them from a local HTTP server, verified their
 digests with `rpmkeys`, and generated real repository metadata with
 `createrepo_c`.
@@ -67,6 +67,22 @@ Verified behaviors:
 - The default timezone helper calls no system tools and leaves configuration
   alone. Explicit timezone selection, minimal-container fallback and rejection
   of invalid zone names are tested with mocked shell commands.
+
+Additional one-time release selection checks:
+
+- An exact Rambox tag bypasses "latest" and retains upstream digest metadata.
+- Missing tags, absent RPMs, draft/prerelease tags and mismatched returned tags
+  fail without falling back to a different release.
+- Tags containing slashes are encoded as one GitHub API path component.
+- The CLI rejects empty tags, multi-service selection and combining a release
+  override with listing. Unsupported providers fail before syncing.
+- The next invocation without the flag uses "latest" again; service manifests
+  remain byte-for-byte unchanged.
+
+Live GitHub API metadata was also checked on 2026-10-21: Rambox "latest" points
+to v2.7.2, while v3.1.1 and v3.1.0 have Linux x64 RPMs with SHA-256 digests.
+v3.0.0 currently has no Linux RPM. These were metadata checks, not a download
+or installation of the full vendor RPMs.
 
 Shell syntax checks passed for every installer, wrapper and shell helper.
 Installer inspection confirms that it only reads root's crontab for backup; it
